@@ -1,11 +1,12 @@
 from flask import Flask, request, jsonify
 import os
+import json
 import google.generativeai as genai
 import PIL.Image
 
 app = Flask(__name__)
 
-# Достаем ключи из сейфа Render
+# Достаем ключ от Gemini из сейфа Render
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if GEMINI_API_KEY:
@@ -25,111 +26,165 @@ HTML = """
             background-color: var(--tg-theme-bg-color, #f4f4f5); 
             color: var(--tg-theme-text-color, #000); 
             text-align: center; 
-            padding: 20px; 
+            padding: 15px; 
             margin: 0;
         }
         .btn { 
             background-color: var(--tg-theme-button-color, #3390ec); 
             color: var(--tg-theme-button-text-color, #fff); 
             border: none; 
-            padding: 15px 20px; 
+            padding: 15px; 
             border-radius: 10px; 
             font-size: 16px; 
             font-weight: bold; 
             width: 100%; 
-            margin-top: 20px; 
+            margin-top: 15px; 
             cursor: pointer; 
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        .btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .scenario-card { 
+            background: var(--tg-theme-secondary-bg-color, #fff); 
+            border: 1px solid #ddd; 
+            padding: 15px; 
+            border-radius: 10px; 
+            margin-top: 15px; 
+            text-align: left; 
         }
-        #status {
+        .scenario-title { font-weight: bold; font-size: 16px; margin-bottom: 5px; color: var(--tg-theme-button-color, #3390ec); }
+        .scenario-desc { font-size: 14px; margin-bottom: 10px; }
+        #status { margin-top: 15px; font-size: 14px; font-weight: bold; color: #ff9800; }
+        #step2, #step3 { display: none; }
+        .prompt-box { 
+            background: #1e1e1e; 
+            color: #4ade80; 
+            padding: 15px; 
+            border-radius: 10px; 
+            text-align: left; 
+            font-family: monospace; 
+            font-size: 13px; 
+            white-space: pre-wrap; 
+            line-height: 1.4; 
             margin-top: 15px;
-            font-size: 14px;
-            font-weight: bold;
-            color: #ff9800;
-        }
-        #result {
-            margin-top: 20px;
-            text-align: left;
-            background: var(--tg-theme-secondary-bg-color, #fff);
-            padding: 15px;
-            border-radius: 10px;
-            display: none;
-            white-space: pre-wrap;
-            font-size: 14px;
-            border: 1px solid #ddd;
-            line-height: 1.5;
         }
     </style>
 </head>
 <body>
-    <h2>📸 Анализ товара</h2>
-    <p>Сфотографируйте товар или выберите из галереи, чтобы нейросеть предложила сценарии для рекламного видео.</p>
-    
-    <!-- Наш пуленепробиваемый элемент для вызова системной камеры/галереи -->
-    <input type="file" id="fileInput" accept="image/*" style="display: none;">
-    
-    <!-- Видимая красивая кнопка -->
-    <button id="mainBtn" class="btn" onclick="document.getElementById('fileInput').click();">📷 Сделать фото / Выбрать</button>
-    
-    <div id="status"></div>
-    <div id="result"></div>
+    <div id="step1">
+        <h2>📸 Анализ товара</h2>
+        <p>Загрузите фото, чтобы ИИ придумал 3 сценария для рекламного видео.</p>
+        <input type="file" id="fileInput" accept="image/*" style="display: none;">
+        <button id="mainBtn" class="btn" onclick="document.getElementById('fileInput').click();">📷 Сделать фото / Выбрать</button>
+        <div id="status"></div>
+    </div>
+
+    <div id="step2">
+        <h2>🎬 Выберите сценарий</h2>
+        <div id="scenariosContainer"></div>
+        <button class="btn" style="background-color: #888;" onclick="location.reload();">🔄 Назад к фото</button>
+    </div>
+
+    <div id="step3">
+        <h2>⚙️ Режиссерский Промпт</h2>
+        <p>Идеальный технический промпт на английском для нейросети генерации видео:</p>
+        <div id="finalPrompt" class="prompt-box"></div>
+        <button id="copyBtn" class="btn" style="background-color: #8b5cf6;" onclick="copyPrompt()">📋 Скопировать промпт</button>
+        <button id="genVideoBtn" class="btn" style="background-color: #10B981;" onclick="Telegram.WebApp.showAlert('В MVP: Промпт готов! В полной версии сервер отправит его в Google Veo, а Бот пришлет вам готовое видео прямо в чат для скачивания в галерею!');">🎥 Сгенерировать видео (Демо)</button>
+        <button class="btn" style="background-color: #888;" onclick="location.reload();">🔄 Начать заново</button>
+    </div>
     
     <script>
-        // Инициализация Telegram
         Telegram.WebApp.ready();
         Telegram.WebApp.expand();
         
+        let uploadedImage = null;
+        let scenariosData = [];
+
         const fileInput = document.getElementById('fileInput');
         const mainBtn = document.getElementById('mainBtn');
         const statusDiv = document.getElementById('status');
-        const resultDiv = document.getElementById('result');
 
-        // Как только пользователь выбрал файл
         fileInput.addEventListener('change', function() {
-            if (fileInput.files.length === 0) return;
+            if (this.files.length === 0) return;
+            uploadedImage = this.files[0];
             
-            const file = fileInput.files[0];
             const formData = new FormData();
-            formData.append('image', file);
+            formData.append('image', uploadedImage);
 
-            // Меняем интерфейс
             mainBtn.disabled = true;
-            mainBtn.innerText = "⏳ Идёт анализ фото...";
-            statusDiv.innerText = "Нейросеть думает (это займет 5-10 сек)...";
-            resultDiv.style.display = "none";
+            statusDiv.innerText = "⏳ Нейросеть изучает товар (5-10 сек)...";
 
-            // Отправляем фото на наш Python-сервер
-            fetch('/analyze', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
+            fetch('/get_scenarios', { method: 'POST', body: formData })
+            .then(res => res.json())
             .then(data => {
-                mainBtn.disabled = false;
-                mainBtn.innerText = "📷 Выбрать другое фото";
-                statusDiv.innerText = "";
-                
                 if (data.error) {
                     Telegram.WebApp.showAlert("Ошибка: " + data.error);
-                } else {
-                    resultDiv.style.display = "block";
-                    resultDiv.innerText = data.text;
+                    mainBtn.disabled = false;
+                    statusDiv.innerText = "";
+                    return;
                 }
+                
+                scenariosData = data.scenarios;
+                document.getElementById('step1').style.display = "none";
+                document.getElementById('step2').style.display = "block";
+                
+                const container = document.getElementById('scenariosContainer');
+                container.innerHTML = "";
+                
+                scenariosData.forEach((scen, index) => {
+                    const card = document.createElement('div');
+                    card.className = "scenario-card";
+                    card.innerHTML = `
+                        <div class="scenario-title">Вариант ${index + 1}: ${scen.title}</div>
+                        <div class="scenario-desc">${scen.description}</div>
+                        <button class="btn" style="margin-top: 5px; padding: 10px;" onclick="generatePrompt(${index})">Выбрать этот вариант</button>
+                    `;
+                    container.appendChild(card);
+                });
             })
-            .catch(error => {
+            .catch(e => {
+                Telegram.WebApp.showAlert("Ошибка связи с сервером.");
                 mainBtn.disabled = false;
-                mainBtn.innerText = "📷 Сделать фото / Выбрать";
-                statusDiv.innerText = "Произошла ошибка связи с сервером.";
-                Telegram.WebApp.showAlert("Ошибка при отправке.");
+                statusDiv.innerText = "";
             });
-            
-            // Очищаем input
-            fileInput.value = "";
         });
+
+        window.generatePrompt = function(index) {
+            const scenario = scenariosData[index];
+            document.getElementById('step2').style.display = "none";
+            document.getElementById('step1').style.display = "block";
+            mainBtn.style.display = "none";
+            statusDiv.innerText = "⚙️ Пишу профессиональный промпт на английском...";
+            
+            const formData = new FormData();
+            formData.append('image', uploadedImage);
+            formData.append('scenario_title', scenario.title);
+            formData.append('scenario_desc', scenario.description);
+
+            fetch('/generate_prompt', { method: 'POST', body: formData })
+            .then(res => res.json())
+            .then(data => {
+                if(data.error) {
+                    Telegram.WebApp.showAlert("Ошибка: " + data.error);
+                    location.reload();
+                    return;
+                }
+                document.getElementById('step1').style.display = "none";
+                document.getElementById('step3').style.display = "block";
+                document.getElementById('finalPrompt').innerText = data.prompt;
+            })
+            .catch(e => {
+                Telegram.WebApp.showAlert("Ошибка генерации промпта.");
+                location.reload();
+            });
+        }
+
+        window.copyPrompt = function() {
+            const text = document.getElementById('finalPrompt').innerText;
+            navigator.clipboard.writeText(text).then(() => {
+                Telegram.WebApp.showAlert("✅ Промпт скопирован! Теперь его можно вставить в ИИ-генератор видео.");
+            });
+        }
     </script>
 </body>
 </html>
@@ -139,36 +194,66 @@ HTML = """
 def home():
     return HTML
 
-@app.route('/analyze', methods=['POST'])
-def analyze():
-    # Проверяем, есть ли ключ
-    if not GEMINI_API_KEY:
-        return jsonify({"error": "Ключ Gemini не найден на сервере!"}), 500
-        
-    if 'image' not in request.files:
-        return jsonify({"error": "Фотография не получена сервером"}), 400
-        
-    file = request.files['image']
-    if file.filename == '':
-        return jsonify({"error": "Пустой файл"}), 400
-        
+@app.route('/get_scenarios', methods=['POST'])
+def get_scenarios():
+    if 'image' not in request.files: return jsonify({"error": "Нет фото"}), 400
+    
     try:
-        # Для Gemini лучше передавать картинку через библиотеку PIL
-        img = PIL.Image.open(file.stream)
-        
-        # Выбираем быструю и умную модель
+        img = PIL.Image.open(request.files['image'].stream)
         model = genai.GenerativeModel('gemini-3.8-flash')
         
-        # Наш промпт
-        prompt = "Ты эксперт по продажам на маркетплейсах (Wildberries, Ozon). Посмотри на это фото и скажи, что это за товар. Предложи 3 креативных и продающих сценария для короткого рекламного видеоролика этого товара. Форматируй текст красиво, используй эмодзи."
+        prompt = """You are a top-tier e-commerce marketer. Analyze the product in the image. 
+        Create exactly 3 short, creative scenarios for a short promotional video (Reels/Shorts).
+        Respond ONLY with a valid JSON array containing exactly 3 objects. 
+        Do not wrap the JSON in markdown blocks (like ```json).
+        Each object must have two string keys: "title" (a catchy title in Russian) and "description" (a brief 1-2 sentence description in Russian)."""
         
-        # Просим сгенерировать ответ
         response = model.generate_content([prompt, img])
+        text = response.text.strip()
         
-        return jsonify({"text": response.text})
-        
+        # Очищаем текст от возможных артефактов ИИ
+        if text.startswith("```json"): text = text[7:]
+        elif text.startswith("```"): text = text[3:]
+        if text.endswith("```"): text = text[:-3]
+        text = text.strip()
+            
+        scenarios = json.loads(text)
+        return jsonify({"scenarios": scenarios})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"error": "Ошибка генерации сценариев. Попробуйте еще раз."}), 500
+
+@app.route('/generate_prompt', methods=['POST'])
+def generate_prompt():
+    if 'image' not in request.files: return jsonify({"error": "Нет фото"}), 400
+        
+    try:
+        img = PIL.Image.open(request.files['image'].stream)
+        scenario_title = request.form.get('scenario_title', '')
+        scenario_desc = request.form.get('scenario_desc', '')
+        
+        model = genai.GenerativeModel('gemini-3.8-flash')
+        
+        prompt = f"""Act as an expert AI Video Prompt Engineer. 
+        I am providing an image of a product. 
+        The chosen video scenario is: Title: "{scenario_title}", Description: "{scenario_desc}".
+        Write a highly detailed, professional text-to-video prompt IN ENGLISH for a model like Google Veo, Sora, or Runway Gen-3.
+        Include specific details about:
+        1. The main subject (based on the image).
+        2. Camera movement (e.g., slow pan, zoom, tracking shot).
+        3. Lighting and atmosphere (e.g., cinematic lighting, studio lighting, natural sunlight).
+        4. Action or motion occurring in the scene.
+        5. Visual style (e.g., photorealistic, 4k, hyperdetailed).
+        
+        The output must be ONLY the English prompt text, ready to be copy-pasted. Do not include any intro, outro, or explanations."""
+        
+        response = model.generate_content([prompt, img])
+        return jsonify({"prompt": response.text.strip()})
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"error": "Ошибка генерации промпта."}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
