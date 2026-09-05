@@ -157,7 +157,7 @@ def analyze():
         img = PIL.Image.open(file.stream)
         
         # Выбираем быструю и умную модель
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-3.8-flash')
         
         # Наш промпт
         prompt = "Ты эксперт по продажам на маркетплейсах (Wildberries, Ozon). Посмотри на это фото и скажи, что это за товар. Предложи 3 креативных и продающих сценария для короткого рекламного видеоролика этого товара. Форматируй текст красиво, используй эмодзи."
