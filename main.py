@@ -13,7 +13,7 @@ app = Flask(__name__)
 os.makedirs('static', exist_ok=True)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-FAL_API_KEY = os.environ.get("FAL_API_KEY")
+DEAPI_KEY = os.environ.get("DEAPI_KEY")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 if GEMINI_API_KEY:
@@ -52,7 +52,7 @@ HTML = """
 
     <div id="step3">
         <h2>🎥 Рендеринг видео...</h2>
-        <p>MiniMax генерирует ролик. Это займет несколько минут.</p>
+        <p>deAPI генерирует ролик. Это займет несколько минут.</p>
         <div id="renderStatus" style="font-weight:bold; color:#10B981; margin-top:20px;">Инициализация...</div>
     </div>
     
@@ -119,7 +119,7 @@ HTML = """
                 if(data.error) { document.getElementById('renderStatus').innerText = "Ошибка: " + data.error; return; }
                 
                 const jobId = data.job_id;
-                document.getElementById('renderStatus').innerText = "Задача отправлена в MiniMax. Рендерим...";
+                document.getElementById('renderStatus').innerText = "Задача отправлена. Рендерим...";
                 
                 const interval = setInterval(() => {
                     const fd = new FormData();
@@ -139,7 +139,7 @@ HTML = """
                             document.getElementById('renderStatus').innerText = "Рендеринг в процессе... Пожалуйста, подождите.";
                         }
                     });
-                }, 10000);
+                }, 10000); // Опрашиваем каждые 10 секунд
             });
         }
     </script>
@@ -179,15 +179,17 @@ def start_generation():
         
         model = genai.GenerativeModel('gemini-3.8-flash')
         img_for_prompt = PIL.Image.open(filepath)
-        prompt_cmd = f"Write a specific, English text-to-video prompt for MiniMax AI based on this image. Scenario: {scenario_title} - {scenario_desc}. Output ONLY the prompt."
+        prompt_cmd = f"Write a specific, English text-to-video prompt for an AI generator based on this image. Scenario: {scenario_title} - {scenario_desc}. Output ONLY the prompt."
         video_prompt = model.generate_content([prompt_cmd, img_for_prompt]).text.strip()
         
-        url = "https://queue.fal.run/fal-ai/minimax/video-01-live/image-to-video"
+        # Интеграция с deAPI.ai
+        url = "https://api.deapi.ai/v1/video/generate" 
         headers = {
-            "Authorization": f"Key {FAL_API_KEY}",
+            "Authorization": f"Bearer {DEAPI_KEY}",
             "Content-Type": "application/json"
         }
         payload = {
+            "model": "minimax-video", # Используем китайскую MiniMax через агрегатор
             "image_url": image_url,
             "prompt": video_prompt
         }
@@ -196,7 +198,7 @@ def start_generation():
         if res.status_code != 200:
             return jsonify({"error": f"API error: {res.text}"}), 500
             
-        job_id = res.json().get("request_id")
+        job_id = res.json().get("job_id") or res.json().get("id")
         return jsonify({"job_id": job_id})
         
     except Exception as e:
@@ -205,25 +207,27 @@ def start_generation():
 @app.route('/check_status/<job_id>', methods=['POST'])
 def check_status(job_id):
     chat_id = request.form.get('chat_id')
-    headers = {"Authorization": f"Key {FAL_API_KEY}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {DEAPI_KEY}", "Content-Type": "application/json"}
     
-    url = f"https://queue.fal.run/fal-ai/minimax/video-01-live/image-to-video/requests/{job_id}"
+    url = f"https://api.deapi.ai/v1/video/status/{job_id}"
     res = requests.get(url, headers=headers)
     
     if res.status_code != 200:
         return jsonify({"status": "processing"})
         
     data = res.json()
-    status = data.get("status")
+    status = data.get("status", "").upper()
     
-    if status == "COMPLETED" or "video" in data:
-        video_url = data.get("video", {}).get("url")
+    # Универсальный парсинг статуса готовности для агрегатора
+    if status in ["COMPLETED", "SUCCEEDED"] or "video_url" in data or "output" in data:
+        video_url = data.get("video_url") or data.get("url") or (data.get("output") and data.get("output")[0])
+        
         if video_url:
             tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo"
             requests.post(tg_url, data={"chat_id": chat_id, "video": video_url})
             return jsonify({"status": "completed"})
             
-    if status == "FAILED" or status == "CANCELLED":
+    if status in ["FAILED", "CANCELLED", "ERROR"]:
         return jsonify({"status": "failed"})
         
     return jsonify({"status": "processing"})
