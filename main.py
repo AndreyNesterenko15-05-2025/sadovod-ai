@@ -9,11 +9,11 @@ import PIL.Image
 
 app = Flask(__name__)
 
-# Папка для публичных картинок (нужна для Luma AI)
+# Папка для публичных картинок
 os.makedirs('static', exist_ok=True)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-LUMA_API_KEY = os.environ.get("LUMA_API_KEY")
+FAL_API_KEY = os.environ.get("FAL_API_KEY")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 if GEMINI_API_KEY:
@@ -52,14 +52,13 @@ HTML = """
 
     <div id="step3">
         <h2>🎥 Рендеринг видео...</h2>
-        <p>Luma AI генерирует ролик. Это займет около 3-5 минут.</p>
+        <p>MiniMax генерирует ролик. Это займет несколько минут.</p>
         <div id="renderStatus" style="font-weight:bold; color:#10B981; margin-top:20px;">Инициализация...</div>
     </div>
     
     <script>
         Telegram.WebApp.ready();
         Telegram.WebApp.expand();
-        // Получаем ID пользователя для отправки видео в личку!
         const chatId = Telegram.WebApp.initDataUnsafe?.user?.id || "";
         
         let uploadedImage = null;
@@ -119,9 +118,8 @@ HTML = """
             .then(data => {
                 if(data.error) { document.getElementById('renderStatus').innerText = "Ошибка: " + data.error; return; }
                 
-                // Запускаем поллинг (каждые 10 секунд спрашиваем сервер, готово ли видео)
                 const jobId = data.job_id;
-                document.getElementById('renderStatus').innerText = "Задача отправлена в Luma. Рендерим 0%...";
+                document.getElementById('renderStatus').innerText = "Задача отправлена в MiniMax. Рендерим...";
                 
                 const interval = setInterval(() => {
                     const fd = new FormData();
@@ -136,12 +134,12 @@ HTML = """
                             Telegram.WebApp.showAlert("Видео успешно отправлено вам в личные сообщения!");
                         } else if (statusData.status === "failed") {
                             clearInterval(interval);
-                            document.getElementById('renderStatus').innerText = "❌ Ошибка генерации видео в Luma.";
+                            document.getElementById('renderStatus').innerText = "❌ Ошибка генерации видео.";
                         } else {
                             document.getElementById('renderStatus').innerText = "Рендеринг в процессе... Пожалуйста, подождите.";
                         }
                     });
-                }, 10000); // 10 секунд
+                }, 10000);
             });
         }
     </script>
@@ -173,32 +171,32 @@ def start_generation():
         scenario_title = request.form.get('scenario_title')
         scenario_desc = request.form.get('scenario_desc')
         
-        # 1. Сохраняем фото публично, чтобы Luma могла его скачать
         filename = f"{uuid.uuid4().hex}.jpg"
         filepath = os.path.join('static', filename)
         file.save(filepath)
-        # Получаем URL нашего сервера
         host_url = request.url_root.rstrip('/')
         image_url = f"{host_url}/static/{filename}"
         
-        # 2. Просим Gemini написать англоязычный видео-промпт
         model = genai.GenerativeModel('gemini-3.8-flash')
         img_for_prompt = PIL.Image.open(filepath)
-        prompt_cmd = f"Write a specific, English text-to-video prompt for Luma API based on this image. Scenario: {scenario_title} - {scenario_desc}. Output ONLY the prompt."
+        prompt_cmd = f"Write a specific, English text-to-video prompt for MiniMax AI based on this image. Scenario: {scenario_title} - {scenario_desc}. Output ONLY the prompt."
         video_prompt = model.generate_content([prompt_cmd, img_for_prompt]).text.strip()
         
-        # 3. Отправляем задачу в Luma AI
-        headers = {"Authorization": f"Bearer {LUMA_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "prompt": video_prompt,
-            "keyframes": {"frame0": {"type": "image", "url": image_url}}
+        url = "https://queue.fal.run/fal-ai/minimax/video-01-live/image-to-video"
+        headers = {
+            "Authorization": f"Key {FAL_API_KEY}",
+            "Content-Type": "application/json"
         }
-        res = requests.post("https://api.lumalabs.ai/dream-machine/v1/generations", json=payload, headers=headers)
+        payload = {
+            "image_url": image_url,
+            "prompt": video_prompt
+        }
+        res = requests.post(url, json=payload, headers=headers)
         
         if res.status_code != 200:
-            return jsonify({"error": f"Luma API error: {res.text}"}), 500
+            return jsonify({"error": f"API error: {res.text}"}), 500
             
-        job_id = res.json().get("id")
+        job_id = res.json().get("request_id")
         return jsonify({"job_id": job_id})
         
     except Exception as e:
@@ -207,21 +205,25 @@ def start_generation():
 @app.route('/check_status/<job_id>', methods=['POST'])
 def check_status(job_id):
     chat_id = request.form.get('chat_id')
-    headers = {"Authorization": f"Bearer {LUMA_API_KEY}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Key {FAL_API_KEY}", "Content-Type": "application/json"}
     
-    # Спрашиваем Luma о статусе видео
-    res = requests.get(f"https://api.lumalabs.ai/dream-machine/v1/generations/{job_id}", headers=headers)
-    data = res.json()
+    url = f"https://queue.fal.run/fal-ai/minimax/video-01-live/image-to-video/requests/{job_id}"
+    res = requests.get(url, headers=headers)
     
-    state = data.get("state")
-    if state == "completed":
-        video_url = data.get("assets", {}).get("video")
-        # 🔥 ВИДЕО ГОТОВО! Отправляем его напрямую в Телеграм-чат пользователя
-        tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo"
-        requests.post(tg_url, data={"chat_id": chat_id, "video": video_url})
-        return jsonify({"status": "completed"})
+    if res.status_code != 200:
+        return jsonify({"status": "processing"})
         
-    elif state == "failed":
+    data = res.json()
+    status = data.get("status")
+    
+    if status == "COMPLETED" or "video" in data:
+        video_url = data.get("video", {}).get("url")
+        if video_url:
+            tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo"
+            requests.post(tg_url, data={"chat_id": chat_id, "video": video_url})
+            return jsonify({"status": "completed"})
+            
+    if status == "FAILED" or status == "CANCELLED":
         return jsonify({"status": "failed"})
         
     return jsonify({"status": "processing"})
