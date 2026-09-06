@@ -193,7 +193,7 @@ def start_generation():
             "prompt": video_prompt,
             "keyframes": {"frame0": {"type": "image", "url": image_url}}
         }
-        res = requests.post("https://api.lumalabs.ai/v1/generations", json=payload, headers=headers)
+        res = requests.post("https://api.lumalabs.ai/dream-machine/v1/generations", json=payload, headers=headers)
         
         if res.status_code != 200:
             return jsonify({"error": f"Luma API error: {res.text}"}), 500
@@ -210,7 +210,7 @@ def check_status(job_id):
     headers = {"Authorization": f"Bearer {LUMA_API_KEY}", "Content-Type": "application/json"}
     
     # Спрашиваем Luma о статусе видео
-    res = requests.get(f"https://api.lumalabs.ai/v1/generations/{job_id}", headers=headers)
+    res = requests.get(f"https://api.lumalabs.ai/dream-machine/v1/generations/{job_id}", headers=headers)
     data = res.json()
     
     state = data.get("state")
