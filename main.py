@@ -26,7 +26,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 vision_model = genai.GenerativeModel('gemini-1.5-flash')
 
 # ==========================================
-# 3. HTML ИНТЕРФЕЙС WEB APP (Мини-приложение)
+# 3. HTML ИНТЕРФЕЙС WEB APP (ВСЕЯДНЫЙ ФОРМАТ)
 # ==========================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -39,25 +39,28 @@ HTML_TEMPLATE = """
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: var(--tg-theme-bg-color, #ffffff); color: var(--tg-theme-text-color, #000000); padding: 20px; text-align: center; }
         h2 { margin-bottom: 20px; }
-        .upload-btn { background-color: var(--tg-theme-button-color, #3390ec); color: var(--tg-theme-button-text-color, #ffffff); padding: 12px 20px; border: none; border-radius: 8px; font-size: 16px; width: 100%; cursor: pointer; margin-bottom: 20px; }
+        .upload-btn { background-color: var(--tg-theme-button-color, #3390ec); color: var(--tg-theme-button-text-color, #ffffff); padding: 12px 20px; border: none; border-radius: 8px; font-size: 16px; width: 100%; cursor: pointer; margin-bottom: 20px; display: inline-block;}
         input[type="file"] { display: none; }
         #preview { max-width: 100%; border-radius: 8px; margin-bottom: 20px; display: none; }
         .prompt-btn { background-color: #f0f0f0; color: #333; padding: 15px; border: 1px solid #ccc; border-radius: 8px; font-size: 14px; width: 100%; cursor: pointer; margin-bottom: 10px; text-align: left; }
         .prompt-btn:hover { background-color: #e0e0e0; }
         #loader { display: none; font-size: 16px; color: var(--tg-theme-hint-color, #999999); margin-top: 20px; }
+        #error-box { display: none; color: #ff3b30; margin-top: 15px; font-weight: bold; }
     </style>
 </head>
 <body>
     <h2>Студия Садовод AI</h2>
-    <p id="instruction">Сделайте фото или выберите из галереи</p>
+    <p id="instruction">Выберите файл или сделайте фото</p>
     
+    <!-- accept="image/*" включает поддержку всех форматов и вызывает системную камеру/галерею -->
     <label class="upload-btn">
-        Загрузить фото
+        📷 Галерея / Камера
         <input type="file" id="imageInput" accept="image/*">
     </label>
     
     <img id="preview" src="" alt="Preview">
-    <div id="loader">Анализирую фото (Gemini)... ⏳</div>
+    <div id="loader">Обработка формата... ⏳</div>
+    <div id="error-box"></div>
     <div id="promptsContainer"></div>
 
     <script>
@@ -69,34 +72,78 @@ HTML_TEMPLATE = """
         const loader = document.getElementById('loader');
         const promptsContainer = document.getElementById('promptsContainer');
         const instruction = document.getElementById('instruction');
+        const errorBox = document.getElementById('error-box');
 
         imageInput.addEventListener('change', function(event) {
             const file = event.target.files[0];
             if (file) {
+                instruction.style.display = 'none';
+                errorBox.style.display = 'none';
+                promptsContainer.innerHTML = '';
+                loader.innerText = 'Оптимизация файла... ⏳';
+                loader.style.display = 'block';
+                
+                // Запоминаем оригинальный формат файла (например, image/webp)
+                const originalMimeType = file.type || 'image/jpeg';
+                
                 const reader = new FileReader();
                 reader.onload = function(e) {
-                    preview.src = e.target.result;
-                    preview.style.display = 'block';
-                    sendImageToGemini(e.target.result.split(',')[1]); 
+                    const img = new Image();
+                    img.onload = function() {
+                        const canvas = document.createElement('canvas');
+                        const MAX_SIZE = 1024;
+                        let width = img.width;
+                        let height = img.height;
+
+                        if (width > height) {
+                            if (width > MAX_SIZE) { height *= MAX_SIZE / width; width = MAX_SIZE; }
+                        } else {
+                            if (height > MAX_SIZE) { width *= MAX_SIZE / height; height = MAX_SIZE; }
+                        }
+                        canvas.width = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
+
+                        // Пытаемся экспортировать в оригинальном формате. Если браузер его не понимает, будет PNG.
+                        let exportMime = originalMimeType;
+                        if (exportMime !== 'image/webp' && exportMime !== 'image/jpeg' && exportMime !== 'image/png') {
+                            exportMime = 'image/jpeg'; // Надежный запасной вариант для HEIC
+                        }
+                        
+                        const compressedDataUrl = canvas.toDataURL(exportMime, 0.8);
+                        
+                        // Вытаскиваем фактический MIME-тип, который отдал браузер, чтобы не обманывать сервер
+                        const actualMimeSent = compressedDataUrl.substring(5, compressedDataUrl.indexOf(';'));
+                        const base64data = compressedDataUrl.split(',')[1];
+                        
+                        preview.src = compressedDataUrl;
+                        preview.style.display = 'block';
+
+                        sendImageToGemini(base64data, actualMimeSent);
+                    }
+                    img.src = e.target.result;
                 }
                 reader.readAsDataURL(file);
             }
         });
 
-        function sendImageToGemini(base64data) {
-            loader.style.display = 'block';
-            promptsContainer.innerHTML = '';
-            instruction.style.display = 'none';
+        function sendImageToGemini(base64data, mimeType) {
+            loader.innerText = 'Анализирую фото (Gemini)... ⏳';
 
             fetch('/api/analyze', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ image: base64data })
+                // Отправляем на сервер фактический тип файла (WEBP, PNG, JPEG)
+                body: JSON.stringify({ image: base64data, mime_type: mimeType })
             })
             .then(response => response.json())
             .then(data => {
                 loader.style.display = 'none';
-                if(data.prompts && data.prompts.length > 0) {
+                if (data.error) {
+                    errorBox.innerText = 'Ошибка: ' + data.error;
+                    errorBox.style.display = 'block';
+                } else if(data.prompts && data.prompts.length > 0) {
                     data.prompts.forEach(promptText => {
                         const btn = document.createElement('button');
                         btn.className = 'prompt-btn';
@@ -104,20 +151,17 @@ HTML_TEMPLATE = """
                         btn.onclick = () => startVideoGeneration(promptText);
                         promptsContainer.appendChild(btn);
                     });
-                } else {
-                    loader.innerText = 'Не удалось получить промпты. Попробуйте еще раз.';
-                    loader.style.display = 'block';
                 }
             })
             .catch(error => {
-                loader.innerText = 'Ошибка соединения с сервером.';
-                loader.style.display = 'block';
+                loader.style.display = 'none';
+                errorBox.innerText = 'Сбой сети. Сервер недоступен.';
+                errorBox.style.display = 'block';
             });
         }
 
         function startVideoGeneration(selectedPrompt) {
             const chatId = Telegram.WebApp.initDataUnsafe?.user?.id;
-            
             fetch('/api/generate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -157,13 +201,8 @@ def send_telegram_message(chat_id, text, reply_markup=None):
 def process_video_generation(chat_id, prompt):
     try:
         send_telegram_message(chat_id, f"🎥 Принято в работу!\n\nВыбранный промпт:\n_{prompt}_\n\nОтправляю задачу в Google Veo. Ожидайте готовность видео (около 5 минут)...")
-        
-        # Запрашиваем токен, чтобы проверить, что JSON-файл работает
         vertex_token = get_vertex_token()
-        
-        # Эмуляция ожидания рендеринга видео
         time.sleep(15) 
-        
         send_telegram_message(chat_id, "✅ Видео успешно сгенерировано! \n\n[Здесь в будущем прикрепится реальный MP4 файл от Veo]")
     except Exception as e:
         send_telegram_message(chat_id, f"❌ Произошла ошибка при генерации: {str(e)}")
@@ -175,12 +214,10 @@ def process_video_generation(chat_id, prompt):
 def home():
     return "Сервер Студия Садовод AI успешно работает!", 200
 
-# Раздача HTML интерфейса для Web App
 @app.route("/webapp", methods=["GET"])
 def webapp():
     return render_template_string(HTML_TEMPLATE)
 
-# Обработка команд от Телеграма
 @app.route("/webhook", methods=["POST"])
 def webhook():
     update = request.get_json()
@@ -189,7 +226,6 @@ def webhook():
         text = update["message"].get("text", "")
         
         if text == "/start":
-            # Кнопка для открытия Web App
             keyboard = {
                 "inline_keyboard": [[
                     {"text": "🎬 Открыть студию", "web_app": {"url": f"{RENDER_URL}/webapp"}}
@@ -199,37 +235,37 @@ def webhook():
     
     return "OK", 200
 
-# API: Получение картинки из Web App и передача в Gemini
+# API: Динамический прием любого формата картинки
 @app.route("/api/analyze", methods=["POST"])
 def api_analyze():
     data = request.get_json()
     img_b64 = data.get("image")
+    mime_type = data.get("mime_type", "image/jpeg") # Динамический формат от Web App
     
     if not img_b64:
-        return jsonify({"error": "No image"}), 400
+        return jsonify({"error": "Фотография не дошла до сервера."}), 400
         
     try:
         image_bytes = base64.b64decode(img_b64)
         prompt_instruction = "Опиши одежду на фото и напиши 3 разных, креативных промпта для генерации рекламного видео. Формат ответа строго такой: каждый промпт начинается с новой строки и с цифры '1. ', '2. ', '3. '."
         
+        # Передаем в Gemini точный MIME-тип
         response = vision_model.generate_content([
-            {"mime_type": "image/jpeg", "data": image_bytes},
+            {"mime_type": mime_type, "data": image_bytes},
             prompt_instruction
         ])
         
-        # Парсим ответ Gemini, вытаскивая только строки, начинающиеся с цифр
         lines = response.text.split('\n')
         prompts = [line.strip() for line in lines if line.strip().startswith(('1.', '2.', '3.'))]
         
-        # Если Gemini ответил криво, возвращаем весь текст как один вариант
         if not prompts:
             prompts = [response.text]
             
         return jsonify({"prompts": prompts})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"Gemini API Error: {str(e)}") 
+        return jsonify({"error": f"Сбой в нейросети Gemini: {str(e)}"}), 500
 
-# API: Получение выбранного промпта от пользователя и запуск рендера
 @app.route("/api/generate", methods=["POST"])
 def api_generate():
     data = request.get_json()
@@ -237,7 +273,6 @@ def api_generate():
     prompt = data.get("prompt")
     
     if chat_id and prompt:
-        # Запускаем фоновый поток, чтобы не блокировать Web App
         threading.Thread(target=process_video_generation, args=(chat_id, prompt)).start()
         
     return jsonify({"status": "processing"})
