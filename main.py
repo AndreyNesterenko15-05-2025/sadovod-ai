@@ -23,8 +23,7 @@ RENDER_URL = "https://sadovod-ai.onrender.com"
 # 2. ИНИЦИАЛИЗАЦИЯ GEMINI
 # ==========================================
 genai.configure(api_key=GEMINI_API_KEY)
-vision_model = genai.GenerativeModel('gemini-1.5-flash')
-
+vision_model = genai.GenerativeModel('gemini-3.8-flash')
 # ==========================================
 # 3. HTML ИНТЕРФЕЙС WEB APP (ВСЕЯДНЫЙ ФОРМАТ)
 # ==========================================
