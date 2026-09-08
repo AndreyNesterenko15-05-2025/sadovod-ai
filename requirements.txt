@@ -1,4 +1,4 @@
-Flask
-google-generativeai
+flask
 requests
-Pillow
+google-generativeai
+google-auth
