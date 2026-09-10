@@ -238,8 +238,9 @@ def api_analyze():
         # 1. Получаем корпоративный токен
         vertex_token = get_vertex_token()
         
-        # 2. Формируем прямой REST API запрос к актуальной модели gemini-3.8-flash
-url = f"https://{VERTEX_REGION}-aiplatform.googleapis.com/v1/projects/{VERTEX_PROJECT_ID}/locations/{VERTEX_REGION}/publishers/google/models/gemini-3.8-flash-001:generateContent"        
+        # 2. Формируем прямой REST API запрос к актуальной модели gemini-3.8-flash-001
+        url = f"https://{VERTEX_REGION}-aiplatform.googleapis.com/v1/projects/{VERTEX_PROJECT_ID}/locations/{VERTEX_REGION}/publishers/google/models/gemini-3.8-flash-001:generateContent"
+        
         headers = {
             "Authorization": f"Bearer {vertex_token}",
             "Content-Type": "application/json"
