@@ -4,7 +4,6 @@ import threading
 import requests
 import base64
 from flask import Flask, request, render_template_string, jsonify
-import google.generativeai as genai
 import google.auth
 import google.auth.transport.requests
 
@@ -14,18 +13,33 @@ app = Flask(__name__)
 # 1. ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ
 # ==========================================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 VERTEX_PROJECT_ID = os.environ.get("VERTEX_PROJECT_ID")
 VERTEX_REGION = os.environ.get("VERTEX_REGION", "us-central1")
 RENDER_URL = "https://sadovod-ai.onrender.com"
 
 # ==========================================
-# 2. ИНИЦИАЛИЗАЦИЯ GEMINI
+# 2. ФУНКЦИИ TELEGRAM И GOOGLE CLOUD
 # ==========================================
-genai.configure(api_key=GEMINI_API_KEY)
-vision_model = genai.GenerativeModel('gemini-3.8-flash')
+def set_webhook():
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
+    requests.post(url, json={"url": f"{RENDER_URL}/webhook"})
+
+def get_vertex_token():
+    """Получает свежий токен из файла google-credentials.json"""
+    credentials, project = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    auth_req = google.auth.transport.requests.Request()
+    credentials.refresh(auth_req)
+    return credentials.token
+
+def send_telegram_message(chat_id, text, reply_markup=None):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    requests.post(url, json=payload)
+
 # ==========================================
-# 3. HTML ИНТЕРФЕЙС WEB APP (ВСЕЯДНЫЙ ФОРМАТ)
+# 3. HTML ИНТЕРФЕЙС WEB APP
 # ==========================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -51,7 +65,6 @@ HTML_TEMPLATE = """
     <h2>Студия Садовод AI</h2>
     <p id="instruction">Выберите файл или сделайте фото</p>
     
-    <!-- accept="image/*" включает поддержку всех форматов и вызывает системную камеру/галерею -->
     <label class="upload-btn">
         📷 Галерея / Камера
         <input type="file" id="imageInput" accept="image/*">
@@ -82,7 +95,6 @@ HTML_TEMPLATE = """
                 loader.innerText = 'Оптимизация файла... ⏳';
                 loader.style.display = 'block';
                 
-                // Запоминаем оригинальный формат файла (например, image/webp)
                 const originalMimeType = file.type || 'image/jpeg';
                 
                 const reader = new FileReader();
@@ -104,22 +116,19 @@ HTML_TEMPLATE = """
                         const ctx = canvas.getContext('2d');
                         ctx.drawImage(img, 0, 0, width, height);
 
-                        // Пытаемся экспортировать в оригинальном формате. Если браузер его не понимает, будет PNG.
                         let exportMime = originalMimeType;
                         if (exportMime !== 'image/webp' && exportMime !== 'image/jpeg' && exportMime !== 'image/png') {
-                            exportMime = 'image/jpeg'; // Надежный запасной вариант для HEIC
+                            exportMime = 'image/jpeg'; 
                         }
                         
                         const compressedDataUrl = canvas.toDataURL(exportMime, 0.8);
-                        
-                        // Вытаскиваем фактический MIME-тип, который отдал браузер, чтобы не обманывать сервер
                         const actualMimeSent = compressedDataUrl.substring(5, compressedDataUrl.indexOf(';'));
                         const base64data = compressedDataUrl.split(',')[1];
                         
                         preview.src = compressedDataUrl;
                         preview.style.display = 'block';
 
-                        sendImageToGemini(base64data, actualMimeSent);
+                        sendImageToVertex(base64data, actualMimeSent);
                     }
                     img.src = e.target.result;
                 }
@@ -127,13 +136,12 @@ HTML_TEMPLATE = """
             }
         });
 
-        function sendImageToGemini(base64data, mimeType) {
-            loader.innerText = 'Анализирую фото (Gemini)... ⏳';
+        function sendImageToVertex(base64data, mimeType) {
+            loader.innerText = 'Анализирую фото (Vertex AI)... ⏳';
 
             fetch('/api/analyze', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                // Отправляем на сервер фактический тип файла (WEBP, PNG, JPEG)
                 body: JSON.stringify({ image: base64data, mime_type: mimeType })
             })
             .then(response => response.json())
@@ -175,27 +183,7 @@ HTML_TEMPLATE = """
 """
 
 # ==========================================
-# 4. ФУНКЦИИ TELEGRAM И GOOGLE CLOUD
-# ==========================================
-def set_webhook():
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
-    requests.post(url, json={"url": f"{RENDER_URL}/webhook"})
-
-def get_vertex_token():
-    credentials, project = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
-    auth_req = google.auth.transport.requests.Request()
-    credentials.refresh(auth_req)
-    return credentials.token
-
-def send_telegram_message(chat_id, text, reply_markup=None):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    requests.post(url, json=payload)
-
-# ==========================================
-# 5. ФОНОВАЯ ГЕНЕРАЦИЯ ВИДЕО (VEO MOCK)
+# 4. ФОНОВАЯ ГЕНЕРАЦИЯ ВИДЕО (VEO MOCK)
 # ==========================================
 def process_video_generation(chat_id, prompt):
     try:
@@ -207,11 +195,11 @@ def process_video_generation(chat_id, prompt):
         send_telegram_message(chat_id, f"❌ Произошла ошибка при генерации: {str(e)}")
 
 # ==========================================
-# 6. МАРШРУТИЗАЦИЯ FLASK
+# 5. МАРШРУТИЗАЦИЯ FLASK
 # ==========================================
 @app.route("/", methods=["GET"])
 def home():
-    return "Сервер Студия Садовод AI успешно работает!", 200
+    return "Сервер Студия Садовод AI успешно работает через Vertex AI!", 200
 
 @app.route("/webapp", methods=["GET"])
 def webapp():
@@ -234,36 +222,67 @@ def webhook():
     
     return "OK", 200
 
-# API: Динамический прием любого формата картинки
+# API: Прямой запрос к Vertex AI (без AI Studio)
 @app.route("/api/analyze", methods=["POST"])
 def api_analyze():
     data = request.get_json()
     img_b64 = data.get("image")
-    mime_type = data.get("mime_type", "image/jpeg") # Динамический формат от Web App
+    mime_type = data.get("mime_type", "image/jpeg") 
     
     if not img_b64:
         return jsonify({"error": "Фотография не дошла до сервера."}), 400
         
     try:
-        image_bytes = base64.b64decode(img_b64)
         prompt_instruction = "Опиши одежду на фото и напиши 3 разных, креативных промпта для генерации рекламного видео. Формат ответа строго такой: каждый промпт начинается с новой строки и с цифры '1. ', '2. ', '3. '."
         
-        # Передаем в Gemini точный MIME-тип
-        response = vision_model.generate_content([
-            {"mime_type": mime_type, "data": image_bytes},
-            prompt_instruction
-        ])
+        # 1. Получаем корпоративный токен
+        vertex_token = get_vertex_token()
         
-        lines = response.text.split('\n')
+        # 2. Формируем прямой REST API запрос к актуальной модели gemini-3.8-flash
+        url = f"https://{VERTEX_REGION}-aiplatform.googleapis.com/v1/projects/{VERTEX_PROJECT_ID}/locations/{VERTEX_REGION}/publishers/google/models/gemini-3.8-flash:generateContent"
+        
+        headers = {
+            "Authorization": f"Bearer {vertex_token}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"inlineData": {"mimeType": mime_type, "data": img_b64}},
+                        {"text": prompt_instruction}
+                    ]
+                }
+            ]
+        }
+        
+        # 3. Отправляем запрос
+        response = requests.post(url, headers=headers, json=payload)
+        response_data = response.json()
+        
+        if response.status_code != 200:
+            return jsonify({"error": f"Ошибка Vertex AI: {response_data.get('error', {}).get('message', 'Неизвестная ошибка')}"}), 500
+            
+        # 4. Аккуратный парсинг ответа
+        try:
+            gemini_text = response_data['candidates'][0]['content']['parts'][0]['text']
+        except (KeyError, IndexError):
+            return jsonify({"error": "Неожиданный формат ответа от Google."}), 500
+            
+        # 5. Разбивка на 3 варианта
+        lines = gemini_text.split('\n')
         prompts = [line.strip() for line in lines if line.strip().startswith(('1.', '2.', '3.'))]
         
         if not prompts:
-            prompts = [response.text]
+            prompts = [gemini_text]
             
         return jsonify({"prompts": prompts})
+        
     except Exception as e:
-        print(f"Gemini API Error: {str(e)}") 
-        return jsonify({"error": f"Сбой в нейросети Gemini: {str(e)}"}), 500
+        print(f"Vertex API Error: {str(e)}") 
+        return jsonify({"error": f"Сбой на сервере: {str(e)}"}), 500
 
 @app.route("/api/generate", methods=["POST"])
 def api_generate():
